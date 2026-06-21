@@ -123,18 +123,85 @@ fn render_line_dim(cells: &[Cell], row_from_bottom: usize) -> String {
     out
 }
 
+fn parse_hex(hex: &str) -> Option<Color> {
+    let hex = hex.trim().trim_start_matches('#');
+    if hex.len() != 6 { return None; }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(Color { r, g, b })
+}
+
+// Cava gradient pattern: primary_container → primary → on_primary_container → primary → primary_container
+fn load_colors_from_cava() -> Option<Vec<(f64, Color)>> {
+    let path = dirs().join(".config/cava/themes/your-theme");
+    let content = std::fs::read_to_string(&path).ok()?;
+
+    let mut g1 = None;
+    let mut g2 = None;
+    let mut g3 = None;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("gradient_color_1") {
+            g1 = extract_hex_from_line(line);
+        } else if line.starts_with("gradient_color_2") {
+            g2 = extract_hex_from_line(line);
+        } else if line.starts_with("gradient_color_3") {
+            g3 = extract_hex_from_line(line);
+        }
+    }
+
+    let c1 = g1?;
+    let c2 = g2?;
+    let c3 = g3?;
+
+    Some(vec![
+        (0.00, c1),
+        (0.25, c2),
+        (0.50, c3),
+        (0.75, c2),
+        (1.00, c1),
+    ])
+}
+
+fn extract_hex_from_line(line: &str) -> Option<Color> {
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '#' {
+            let mut hex = String::new();
+            while let Some(&next) = chars.peek() {
+                if next.is_ascii_hexdigit() {
+                    hex.push(next);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            if hex.len() == 6 {
+                return parse_hex(&hex);
+            }
+        }
+    }
+    None
+}
+
+fn default_stops() -> Vec<(f64, Color)> {
+    vec![
+        (0.00, Color { r: 97,  g: 93,  b: 148 }),
+        (0.25, Color { r: 197, g: 192, b: 254 }),
+        (0.50, Color { r: 255, g: 255, b: 255 }),
+        (0.75, Color { r: 197, g: 192, b: 254 }),
+        (1.00, Color { r: 97,  g: 93,  b: 148 }),
+    ]
+}
+
 fn main() -> io::Result<()> {
     let mut stdout = io::stdout();
     print!("\x1b[?1049h\x1b[?25l\x1b[2J");
     stdout.flush()?;
 
-    let stops = [
-        (0.00, Color { r: 120, g: 144, b: 156 }),
-        (0.25, Color { r: 144, g: 202, b: 249 }),
-        (0.50, Color { r: 135, g: 206, b: 235 }),
-        (0.75, Color { r: 187, g: 222, b: 251 }),
-        (1.00, Color { r: 120, g: 144, b: 156 }),
-    ];
+    let stops = load_colors_from_cava().unwrap_or_else(default_stops);
 
     loop {
         let (h, m, s) = get_time();
@@ -149,9 +216,13 @@ fn main() -> io::Result<()> {
         }
 
         // mirror separator
-        println!("\x1b[38;2;90;105;115m  ─────────────────────────────────────────────  \x1b[0m");
+        let sep = stops.first().map(|c| c.1).unwrap_or(Color { r: 97, g: 93, b: 148 });
+        println!("\x1b[38;2;{};{};{}m  ─────────────────────────────────────────────  \x1b[0m",
+            (sep.r as u32 * 7 / 10) as u8,
+            (sep.g as u32 * 7 / 10) as u8,
+            (sep.b as u32 * 7 / 10) as u8,
+        );
 
-        // reflection: reversed rows, fading out
         for r in 0..REFLECT_ROWS {
             let src_row = ROWS - 1 - (r % ROWS);
             let cells = &grid.cells[src_row];
@@ -168,9 +239,15 @@ fn get_time() -> (u32, u32, u32) {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let beijing = secs + 8 * 3600; // UTC+8
+    let beijing = secs + 8 * 3600;
     let s = (beijing % 60) as u32;
     let m = ((beijing / 60) % 60) as u32;
     let h = ((beijing / 3600) % 24) as u32;
     (h, m, s)
+}
+
+fn dirs() -> std::path::PathBuf {
+    std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
 }
