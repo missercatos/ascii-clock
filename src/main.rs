@@ -74,27 +74,32 @@ struct DigitGrid {
 
 fn build_digit_grid(time_str: &str, stops: &[(f64, Color)]) -> DigitGrid {
     let mut cells = vec![vec![]; ROWS];
+    let total_width = 70.0;
 
     for (i, ch) in time_str.chars().enumerate() {
         let d = (ch as u8 - b'0') as usize;
-        let char_pos = i as f64 / 5.0;
-        let c = gradient_color(stops, char_pos);
 
         for row in 0..ROWS {
+            let x0 = cells[row].len() as f64;
             if !cells[row].is_empty() {
                 cells[row].push(Cell { text: " ".into(), color: Color { r: 0, g: 0, b: 0 } });
             }
-            cells[row].push(Cell { text: DIGITS[d][row].to_string(), color: c });
+            for (cx, c) in DIGITS[d][row].chars().enumerate() {
+                let char_pos = (x0 + 1.0 + cx as f64) / total_width;
+                cells[row].push(Cell { text: c.to_string(), color: gradient_color(stops, char_pos) });
+            }
         }
 
         if i == 1 || i == 3 {
-            let colon_t = (i as f64 + 0.5) / 5.0;
-            let cc = gradient_color(stops, colon_t);
             for row in 0..ROWS {
+                let x0 = cells[row].len() as f64;
                 if !cells[row].is_empty() {
                     cells[row].push(Cell { text: " ".into(), color: Color { r: 0, g: 0, b: 0 } });
                 }
-                cells[row].push(Cell { text: COLON[row].to_string(), color: cc });
+                for (cx, c) in COLON[row].chars().enumerate() {
+                    let char_pos = (x0 + 1.0 + cx as f64) / total_width;
+                    cells[row].push(Cell { text: c.to_string(), color: gradient_color(stops, char_pos) });
+                }
             }
         }
     }
@@ -132,37 +137,35 @@ fn parse_hex(hex: &str) -> Option<Color> {
     Some(Color { r, g, b })
 }
 
-// Cava gradient pattern: primary_container → primary → on_primary_container → primary → primary_container
 fn load_colors_from_cava() -> Option<Vec<(f64, Color)>> {
     let path = dirs().join(".config/cava/themes/your-theme");
     let content = std::fs::read_to_string(&path).ok()?;
 
-    let mut g1 = None;
-    let mut g2 = None;
-    let mut g3 = None;
+    let mut colors: Vec<Color> = Vec::new();
 
     for line in content.lines() {
         let line = line.trim();
-        if line.starts_with("gradient_color_1") {
-            g1 = extract_hex_from_line(line);
-        } else if line.starts_with("gradient_color_2") {
-            g2 = extract_hex_from_line(line);
-        } else if line.starts_with("gradient_color_3") {
-            g3 = extract_hex_from_line(line);
+        for n in 1..=8 {
+            if line.starts_with(&format!("gradient_color_{}", n)) {
+                if let Some(c) = extract_hex_from_line(line) {
+                    if n > colors.len() {
+                        colors.resize(n, Color { r: 0, g: 0, b: 0 });
+                    }
+                    colors[n - 1] = c;
+                }
+            }
         }
     }
 
-    let c1 = g1?;
-    let c2 = g2?;
-    let c3 = g3?;
+    if colors.is_empty() {
+        return None;
+    }
+    if colors.len() == 1 {
+        return Some(vec![(0.0, colors[0]), (1.0, colors[0])]);
+    }
 
-    Some(vec![
-        (0.00, c1),
-        (0.25, c2),
-        (0.50, c3),
-        (0.75, c2),
-        (1.00, c1),
-    ])
+    let last = colors.len() - 1;
+    Some(colors.iter().enumerate().map(|(i, c)| (i as f64 / last as f64, *c)).collect())
 }
 
 fn extract_hex_from_line(line: &str) -> Option<Color> {
@@ -188,11 +191,11 @@ fn extract_hex_from_line(line: &str) -> Option<Color> {
 
 fn default_stops() -> Vec<(f64, Color)> {
     vec![
-        (0.00, Color { r: 97,  g: 93,  b: 148 }),
-        (0.25, Color { r: 197, g: 192, b: 254 }),
-        (0.50, Color { r: 255, g: 255, b: 255 }),
-        (0.75, Color { r: 197, g: 192, b: 254 }),
-        (1.00, Color { r: 97,  g: 93,  b: 148 }),
+        (0.00, Color { r: 125, g: 207, b: 255 }),
+        (0.25, Color { r: 122, g: 162, b: 247 }),
+        (0.50, Color { r: 187, g: 154, b: 247 }),
+        (0.75, Color { r: 247, g: 118, b: 142 }),
+        (1.00, Color { r: 255, g: 158, b: 100 }),
     ]
 }
 
