@@ -1,6 +1,31 @@
 use std::io::{self, Write};
+use std::os::unix::io::AsRawFd;
 use std::thread;
 use std::time::Duration;
+
+#[repr(C)]
+struct Winsize {
+    row: u16,
+    col: u16,
+    xpixel: u16,
+    ypixel: u16,
+}
+
+extern "C" {
+    fn ioctl(fd: i32, request: u64, ...) -> i32;
+}
+
+const TIOCGWINSZ: u64 = 0x5413;
+
+fn term_size() -> Option<(u32, u32)> {
+    let mut ws = Winsize { row: 0, col: 0, xpixel: 0, ypixel: 0 };
+    let ret = unsafe { ioctl(std::io::stdout().as_raw_fd(), TIOCGWINSZ, &mut ws) };
+    if ret == 0 && ws.row > 0 && ws.col > 0 {
+        Some((ws.col as u32, ws.row as u32))
+    } else {
+        None
+    }
+}
 
 const DIGITS: [[&str; 5]; 10] = [
     [" ██████ ", "██    ██", "██    ██", "██    ██", " ██████ "],
@@ -211,25 +236,38 @@ fn main() -> io::Result<()> {
         let time_str = format!("{:02}{:02}{:02}", h, m, s);
         let grid = build_digit_grid(&time_str, &stops);
 
-        print!("\x1b[1;1H\x1b[2J\x1b[?25l");
+        let width = grid.cells[0].len() + 4;
+        let height = ROWS + 1 + REFLECT_ROWS + 1;
 
-        println!();
+        let (cols, rows) = term_size().unwrap_or((80, 24));
+        let left = cols.saturating_sub(width as u32) / 2;
+        let top = rows.saturating_sub(height as u32) / 2;
+
+        print!("\x1b[2J\x1b[?25l");
+
+        let mut line = top;
         for row in 0..ROWS {
+            print!("\x1b[{};{}H", line + 1, left + 1);
             println!("  {}  ", render_line(&grid.cells[row]));
+            line += 1;
         }
 
         // mirror separator
         let sep = stops.first().map(|c| c.1).unwrap_or(Color { r: 97, g: 93, b: 148 });
+        print!("\x1b[{};{}H", line + 1, left + 1);
         println!("\x1b[38;2;{};{};{}m  ─────────────────────────────────────────────  \x1b[0m",
             (sep.r as u32 * 7 / 10) as u8,
             (sep.g as u32 * 7 / 10) as u8,
             (sep.b as u32 * 7 / 10) as u8,
         );
+        line += 1;
 
         for r in 0..REFLECT_ROWS {
             let src_row = ROWS - 1 - (r % ROWS);
             let cells = &grid.cells[src_row];
+            print!("\x1b[{};{}H", line + 1, left + 1);
             println!("  {}  ", render_line_dim(cells, r + 1));
+            line += 1;
         }
 
         stdout.flush()?;
