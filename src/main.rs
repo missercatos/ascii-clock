@@ -193,6 +193,52 @@ fn load_colors_from_cava() -> Option<Vec<(f64, Color)>> {
     Some(colors.iter().enumerate().map(|(i, c)| (i as f64 / last as f64, *c)).collect())
 }
 
+// 从主题文件加载渐变色（格式同 cava 主题：gradient_color_1 = '#rrggbb'）
+fn load_theme_stops() -> Option<Vec<(f64, Color)>> {
+    let theme_name = std::env::args()
+        .position(|a| a == "--theme")
+        .and_then(|i| std::env::args().nth(i + 1))
+        .or_else(|| {
+            std::fs::read_to_string(dirs().join(".config/ascii-clock/theme"))
+                .ok()
+                .and_then(|s| {
+                    let t = s.trim();
+                    if t.is_empty() { None } else { Some(t.to_string()) }
+                })
+        })
+        .unwrap_or_else(|| "tokyonight".into());
+
+    let base = dirs().join(".config/ascii-clock/themes").join(&theme_name);
+    let path = if base.extension().is_some() {
+        base
+    } else {
+        base.with_extension("conf")
+    };
+    let content = std::fs::read_to_string(&path).ok()?;
+    let mut colors: Vec<Color> = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        for n in 1..=8 {
+            if line.starts_with(&format!("gradient_color_{}", n)) {
+                if let Some(c) = extract_hex_from_line(line) {
+                    if n > colors.len() {
+                        colors.resize(n, Color { r: 0, g: 0, b: 0 });
+                    }
+                    colors[n - 1] = c;
+                }
+            }
+        }
+    }
+    if colors.is_empty() {
+        return None;
+    }
+    if colors.len() == 1 {
+        return Some(vec![(0.0, colors[0]), (1.0, colors[0])]);
+    }
+    let last = colors.len() - 1;
+    Some(colors.iter().enumerate().map(|(i, c)| (i as f64 / last as f64, *c)).collect())
+}
+
 fn extract_hex_from_line(line: &str) -> Option<Color> {
     let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
@@ -229,15 +275,18 @@ fn main() -> io::Result<()> {
     print!("\x1b[?1049h\x1b[?25l\x1b[2J");
     stdout.flush()?;
 
-    let stops = load_colors_from_cava().unwrap_or_else(default_stops);
+    let stops = load_theme_stops()
+        .or_else(load_colors_from_cava)
+        .unwrap_or_else(default_stops);
 
     loop {
         let (h, m, s) = get_time();
         let time_str = format!("{:02}{:02}{:02}", h, m, s);
         let grid = build_digit_grid(&time_str, &stops);
 
-        let width = grid.cells[0].len() + 4;
-        let height = ROWS + 1 + REFLECT_ROWS + 1;
+        let row_width = grid.cells.iter().map(|r| r.len()).max().unwrap_or(0);
+        let width = row_width + 4;
+        let height = ROWS + 1 + REFLECT_ROWS;
 
         let (cols, rows) = term_size().unwrap_or((80, 24));
         let left = cols.saturating_sub(width as u32) / 2;
@@ -252,13 +301,15 @@ fn main() -> io::Result<()> {
             line += 1;
         }
 
-        // mirror separator
+        // mirror separator（长度与数字行对齐）
         let sep = stops.first().map(|c| c.1).unwrap_or(Color { r: 97, g: 93, b: 148 });
+        let sep_width = row_width.saturating_sub(2);
         print!("\x1b[{};{}H", line + 1, left + 1);
-        println!("\x1b[38;2;{};{};{}m  ─────────────────────────────────────────────  \x1b[0m",
+        println!("\x1b[38;2;{};{};{}m  {}  \x1b[0m",
             (sep.r as u32 * 7 / 10) as u8,
             (sep.g as u32 * 7 / 10) as u8,
             (sep.b as u32 * 7 / 10) as u8,
+            "─".repeat(sep_width),
         );
         line += 1;
 
