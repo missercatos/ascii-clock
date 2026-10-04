@@ -51,6 +51,50 @@ const COLON: [&str; 5] = [
 const ROWS: usize = 5;
 const REFLECT_ROWS: usize = 3;
 
+#[derive(Clone)]
+struct Config {
+    theme: String,
+    size: usize,     // 字形块放大倍数（1 = 原大小，2 = 更大）
+    mirror: bool,    // 是否显示镜像/倒影
+    reflect_rows: usize,
+    reflect_dim: f64, // 镜像淡化速度，越大越淡
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            theme: "tokyonight".into(),
+            size: 1,
+            mirror: true,
+            reflect_rows: 3,
+            reflect_dim: 0.3,
+        }
+    }
+}
+
+fn load_config() -> Config {
+    let mut cfg = Config::default();
+    if let Ok(content) = std::fs::read_to_string(dirs().join(".config/ascii-clock/config")) {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') { continue; }
+            if let Some((k, v)) = line.split_once('=') {
+                let k = k.trim();
+                let v = v.trim();
+                match k {
+                    "theme" => cfg.theme = v.into(),
+                    "size" => cfg.size = v.parse().unwrap_or(1).max(1),
+                    "mirror" => cfg.mirror = v == "true" || v == "1" || v == "yes",
+                    "reflect_rows" => cfg.reflect_rows = v.parse().unwrap_or(3).min(8),
+                    "reflect_dim" => cfg.reflect_dim = v.parse().unwrap_or(0.3),
+                    _ => {}
+                }
+            }
+        }
+    }
+    cfg
+}
+
 #[derive(Copy, Clone)]
 struct Color {
     r: u8,
@@ -199,6 +243,10 @@ fn load_theme_stops() -> Option<Vec<(f64, Color)>> {
         .position(|a| a == "--theme")
         .and_then(|i| std::env::args().nth(i + 1))
         .or_else(|| {
+            if let Ok(v) = std::env::var("ASCII_CLOCK_THEME") {
+                let t = v.trim();
+                if !t.is_empty() { return Some(t.to_string()); }
+            }
             std::fs::read_to_string(dirs().join(".config/ascii-clock/theme"))
                 .ok()
                 .and_then(|s| {
@@ -270,11 +318,36 @@ fn default_stops() -> Vec<(f64, Color)> {
     ]
 }
 
+// 按 size 放大每一格（水平重复 + 垂直重复整行）
+fn scale_grid(grid: DigitGrid, size: usize) -> DigitGrid {
+    if size <= 1 {
+        return grid;
+    }
+    let mut cells: Vec<Vec<Cell>> = Vec::new();
+    for row in grid.cells {
+        let mut expanded_row: Vec<Cell> = Vec::new();
+        for cell in row {
+            for _ in 0..size {
+                expanded_row.push(cell.clone());
+            }
+        }
+        for _ in 0..size {
+            cells.push(expanded_row.clone());
+        }
+    }
+    DigitGrid { cells }
+}
+
 fn main() -> io::Result<()> {
     let mut stdout = io::stdout();
     print!("\x1b[?1049h\x1b[?25l\x1b[2J");
     stdout.flush()?;
 
+    let cfg = load_config();
+    // 把 config 里的主题传给 load_theme_stops 作为默认（--theme 命令行仍优先）
+    if std::env::var("ASCII_CLOCK_THEME").is_err() {
+        std::env::set_var("ASCII_CLOCK_THEME", &cfg.theme);
+    }
     let stops = load_theme_stops()
         .or_else(load_colors_from_cava)
         .unwrap_or_else(default_stops);
@@ -282,11 +355,13 @@ fn main() -> io::Result<()> {
     loop {
         let (h, m, s) = get_time();
         let time_str = format!("{:02}{:02}{:02}", h, m, s);
-        let grid = build_digit_grid(&time_str, &stops);
+        let base = build_digit_grid(&time_str, &stops);
+        let grid = scale_grid(base, cfg.size);
+        let rows_total = grid.cells.len();
 
         let row_width = grid.cells.iter().map(|r| r.len()).max().unwrap_or(0);
         let width = row_width + 4;
-        let height = ROWS + 1 + REFLECT_ROWS;
+        let height = rows_total + 1 + if cfg.mirror { cfg.reflect_rows } else { 0 };
 
         let (cols, rows) = term_size().unwrap_or((80, 24));
         let left = cols.saturating_sub(width as u32) / 2;
@@ -295,30 +370,40 @@ fn main() -> io::Result<()> {
         print!("\x1b[2J\x1b[?25l");
 
         let mut line = top;
-        for row in 0..ROWS {
+        for row in 0..rows_total {
             print!("\x1b[{};{}H", line + 1, left + 1);
             println!("  {}  ", render_line(&grid.cells[row]));
             line += 1;
         }
 
-        // mirror separator（长度与数字行对齐）
-        let sep = stops.first().map(|c| c.1).unwrap_or(Color { r: 97, g: 93, b: 148 });
-        let sep_width = row_width.saturating_sub(2);
-        print!("\x1b[{};{}H", line + 1, left + 1);
-        println!("\x1b[38;2;{};{};{}m  {}  \x1b[0m",
-            (sep.r as u32 * 7 / 10) as u8,
-            (sep.g as u32 * 7 / 10) as u8,
-            (sep.b as u32 * 7 / 10) as u8,
-            "─".repeat(sep_width),
-        );
-        line += 1;
-
-        for r in 0..REFLECT_ROWS {
-            let src_row = ROWS - 1 - (r % ROWS);
-            let cells = &grid.cells[src_row];
+        if cfg.mirror {
+            // mirror separator（长度与数字行对齐）
+            let sep = stops.first().map(|c| c.1).unwrap_or(Color { r: 97, g: 93, b: 148 });
+            let sep_width = row_width.saturating_sub(2);
             print!("\x1b[{};{}H", line + 1, left + 1);
-            println!("  {}  ", render_line_dim(cells, r + 1));
+            println!("\x1b[38;2;{};{};{}m  {}  \x1b[0m",
+                (sep.r as u32 * 7 / 10) as u8,
+                (sep.g as u32 * 7 / 10) as u8,
+                (sep.b as u32 * 7 / 10) as u8,
+                "─".repeat(sep_width),
+            );
             line += 1;
+
+            for r in 0..cfg.reflect_rows {
+                let src_row = rows_total.saturating_sub(1).saturating_sub(r % rows_total.max(1));
+                let cells = &grid.cells[src_row];
+                let factor = 1.0 - (r as f64 * cfg.reflect_dim);
+                let factor = factor.max(0.1);
+                let mut out = String::new();
+                for cell in cells {
+                    let dc = cell.color.dim(factor);
+                    out.push_str(&format!("\x1b[38;2;{};{};{}m{}", dc.r, dc.g, dc.b, cell.text));
+                }
+                out.push_str("\x1b[0m");
+                print!("\x1b[{};{}H", line + 1, left + 1);
+                println!("  {}  ", out);
+                line += 1;
+            }
         }
 
         stdout.flush()?;
