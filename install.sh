@@ -1,5 +1,6 @@
 #!/bin/bash
 # ascii-clock 安装脚本
+# 简单脚本
 set -e
 
 echo "编译中..."
